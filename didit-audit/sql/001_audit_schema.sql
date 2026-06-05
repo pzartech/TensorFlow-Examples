@@ -46,6 +46,14 @@ create table if not exists audit_anchor_proof (
   unique (anchor_id, method, provider)
 );
 
+-- Per-sink high-water mark for replicating full records to independent layers
+-- (filesystem/WORM, S3 Object Lock, Azure immutable blob, ...).
+create table if not exists audit_replication (
+  sink       text        primary key,
+  last_seq   bigint      not null default 0,
+  updated_at timestamptz not null default now()
+);
+
 -- Append-only enforcement. Run as the table owner, then grant the app a
 -- write-once role. (Adjust 'ici_app' to ICI's actual application role.)
 revoke update, delete, truncate on audit_log from public;

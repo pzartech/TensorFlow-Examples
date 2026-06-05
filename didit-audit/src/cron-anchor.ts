@@ -1,14 +1,23 @@
 import { pool } from './db.js';
 import { anchorPending, upgradeProofs } from './anchor.js';
+import { replicatePending } from './replicate.js';
 
 /**
  * Scheduled entrypoint. Run on a timer (Supabase scheduled function, cron, etc.).
- * First advances any proofs that have since confirmed (Bitcoin / EVM), then
- * anchors the latest batch of records with every configured provider.
+ * Replicates new records to every configured sink, advances any proofs that have
+ * since confirmed (Bitcoin / EVM), then anchors the latest batch of records with
+ * every configured provider.
  */
 async function main() {
   const client = await pool.connect();
   try {
+    const replicas = await replicatePending(client);
+    for (const r of replicas) {
+      if (r.replicated || r.error) {
+        console.log(`replicated ${r.replicated} to ${r.sink} (lastSeq ${r.lastSeq})${r.error ? ` — error: ${r.error}` : ''}`);
+      }
+    }
+
     const confirmed = await upgradeProofs(client);
     if (confirmed) console.log(`confirmed ${confirmed} pending proof(s)`);
 

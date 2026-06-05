@@ -19,8 +19,13 @@ A log we fully control can't prove that on its own, so we:
    configure** — Bitcoin, qualified RFC 3161 timestamps, EVM chains, signatures.
    The more independent witnesses, the harder any single point is to compromise
    or explain away.
-3. Publish **only hashes**. All personal data stays in our database and stays
-   erasable (GDPR-compatible).
+3. **Replicate** every full record to **as many independent layers as you
+   configure** (filesystem/WORM, S3 Object Lock, Azure immutable blob), so the
+   *information* — not just its hash — survives loss or tampering of any one
+   store. `verify` cross-checks every layer agrees.
+4. Anchors publish **only hashes**. Replicas hold full payloads, so keep each
+   replica encrypted/access-controlled; personal data stays erasable
+   (GDPR-compatible — crypto-shred for any true-WORM/public layer).
 
 ## Anchor providers (stack as many as you like)
 
@@ -39,6 +44,22 @@ no code changes.
 never loses the others) and stores each proof as a row in `audit_anchor_proof`.
 `verifyAuditLog()` checks **every** proof of **every** anchor.
 
+## Replication layers (several copies of the same information)
+
+Anchors prove the *hash*; sinks replicate the *record*. Each configured sink
+holds a full, self-describing copy of every record (keyed `audit/<seq>.json`).
+Add more sinks for more layers — no code change.
+
+| Sink | env | WORM via | Notes |
+|------|-----|----------|-------|
+| Filesystem (×N) | `FS_SINKS` | WORM/NFS mount | write-once (`wx`); no extra deps |
+| S3 (×N) | `S3_SINKS` | bucket Object Lock | optional `@aws-sdk/client-s3`, SSE on |
+| Azure Blob (×N) | `AZURE_BLOB_SINKS` | container immutability policy | optional `@azure/storage-blob` |
+
+`replicatePending()` fans new records out to every sink (per-sink high-water mark,
+idempotent, best-effort). `verifyReplicas()` confirms each layer has every record
+with a matching `record_hash`, and is included in `npm run verify`.
+
 ## Files
 
 | File | Purpose |
@@ -52,10 +73,12 @@ never loses the others) and stores each proof as a row in `audit_anchor_proof`.
 | `src/evm-anchor.ts` | EVM anchor via `viem` (optional dep, lazy-loaded) |
 | `src/signature-anchor.ts` | Ed25519 / KMS-style signature anchor |
 | `src/anchor.ts` | `anchorPending()` + `upgradeProofs()` across all providers |
+| `src/sinks.ts` | Replication sinks (filesystem, S3, Azure) + `getSinks()` |
+| `src/replicate.ts` | `replicatePending()` + `verifyReplicas()` |
 | `src/verify.ts` | Recompute chain + verify all proofs |
 | `src/didit-webhook.ts` | HMAC-SHA256 signature check + append |
-| `src/cron-anchor.ts` | Scheduled anchoring job |
-| `src/cli-verify.ts` | `npm run verify` — auditor-facing report |
+| `src/cron-anchor.ts` | Scheduled replicate + anchor job |
+| `src/cli-verify.ts` | `npm run verify` — chain + proofs + replicas report |
 
 ## Setup
 

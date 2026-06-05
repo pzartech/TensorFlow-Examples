@@ -56,10 +56,22 @@ export async function verifyAuditLog(db: PoolClient): Promise<VerifyResult> {
 
   const anchorRows = (await db.query('select * from audit_anchor order by from_seq')).rows;
   const anchors: VerifyResult['anchors'] = [];
+  // Single pass: both rows and anchors are ordered by sequence, so we walk the
+  // rows with one pointer and slice each contiguous anchor range — O(N+M).
+  let rowIndex = 0;
   for (const a of anchorRows) {
-    const slice = rows
-      .filter((r) => BigInt(r.seq) >= BigInt(a.from_seq) && BigInt(r.seq) <= BigInt(a.to_seq))
-      .map((r) => r.record_hash as Buffer);
+    const fromSeq = BigInt(a.from_seq);
+    const toSeq = BigInt(a.to_seq);
+    while (rowIndex < rows.length && BigInt(rows[rowIndex].seq) < fromSeq) rowIndex++;
+
+    const slice: Buffer[] = [];
+    while (rowIndex < rows.length && BigInt(rows[rowIndex].seq) <= toSeq) {
+      slice.push(rows[rowIndex].record_hash as Buffer);
+      rowIndex++;
+    }
+    if (slice.length === 0) {
+      throw new Error(`anchor ${a.id}: no records in range ${a.from_seq}-${a.to_seq}`);
+    }
     if (!merkleRoot(slice).equals(a.merkle_root)) {
       throw new Error(`anchor ${a.id}: Merkle root mismatch`);
     }

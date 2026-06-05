@@ -48,18 +48,42 @@ export async function anchorPending(db: PoolClient) {
  */
 export async function upgradeAnchors(db: PoolClient) {
   const rows = (
-    await db.query('select id, ots_proof from audit_anchor where bitcoin_block is null')
+    await db.query(
+      'select id, merkle_root, ots_proof from audit_anchor where bitcoin_block is null',
+    )
   ).rows;
   let upgraded = 0;
   for (const a of rows) {
     const detached = OpenTimestamps.DetachedTimestampFile.deserialize([...a.ots_proof]);
     const changed = await OpenTimestamps.upgrade(detached);
-    if (changed) {
-      await db.query('update audit_anchor set ots_proof=$1 where id=$2', [
+
+    // Once the proof verifies against Bitcoin, capture the block height (or fall
+    // back to a sentinel) so this anchor is no longer re-processed on every run.
+    let bitcoinBlock: number | null = null;
+    try {
+      const original = OpenTimestamps.DetachedTimestampFile.fromHash(
+        new OpenTimestamps.Ops.OpSHA256(),
+        a.merkle_root,
+      );
+      const result = await OpenTimestamps.verify(detached, original);
+      if (result != null) {
+        // Newer lib versions expose { bitcoin: { height, timestamp } }; older
+        // ones return the Unix timestamp directly. Either confirms the anchor.
+        bitcoinBlock =
+          (result as { bitcoin?: { height?: number } })?.bitcoin?.height ??
+          (typeof result === 'number' ? result : 1);
+      }
+    } catch {
+      // Not yet confirmed on-chain.
+    }
+
+    if (changed || bitcoinBlock !== null) {
+      await db.query('update audit_anchor set ots_proof=$1, bitcoin_block=$2 where id=$3', [
         Buffer.from(detached.serializeToBytes()),
+        bitcoinBlock,
         a.id,
       ]);
-      upgraded++;
+      if (bitcoinBlock !== null) upgraded++;
     }
   }
   return upgraded;

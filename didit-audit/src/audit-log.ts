@@ -21,8 +21,14 @@ export interface AuditEvent {
  * the moment it exists.
  */
 export async function appendAuditEvent(db: PoolClient, ev: AuditEvent) {
+  // Serialize all appenders on a single transaction-scoped advisory lock.
+  // `FOR UPDATE` alone is insufficient: when the table is empty (genesis) there
+  // is no tail row to lock, so concurrent writers would all read prevHash=ZERO
+  // and fork the chain. The lock is released automatically on commit/rollback.
+  await db.query("select pg_advisory_xact_lock(hashtext('didit-audit:audit_log'))");
+
   const tail = await db.query(
-    'select record_hash from audit_log order by seq desc limit 1 for update',
+    'select record_hash from audit_log order by seq desc limit 1',
   );
   const prevHash: Buffer = tail.rows[0]?.record_hash ?? ZERO;
 

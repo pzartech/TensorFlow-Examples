@@ -38,10 +38,12 @@ export async function handleDiditWebhook(
 
   await db.query('begin');
   try {
+    // The payload is attacker-influenced and may be malformed; read fields
+    // defensively so a bad body can't crash the handler before it's logged.
     const res = await appendAuditEvent(db, {
-      eventType: `didit.${event.status ?? 'event'}`,
-      subjectRef: event.vendor_data, // pseudonymous ICI user id you passed at session creation
-      diditSessionId: event.session_id,
+      eventType: `didit.${event?.status ?? 'event'}`,
+      subjectRef: event?.vendor_data, // pseudonymous ICI user id you passed at session creation
+      diditSessionId: event?.session_id,
       payload: {
         raw: rawBody.toString('base64'), // the exact bytes Didit signed
         signature: signatureHeader,

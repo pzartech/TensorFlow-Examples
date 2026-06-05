@@ -1,15 +1,20 @@
 {
   "name": "didit-audit",
-  "version": "0.2.0",
-  "description": "Tamper-evident, multi-anchored audit log for Didit identity verifications",
+  "version": "0.3.0",
+  "description": "Tamper-evident, multi-anchored, multi-replicated, cross-corroborated audit log for Didit identity verifications",
   "type": "module",
   "scripts": {
+    "migrate": "tsx src/migrate.ts",
+    "start": "tsx src/start.ts",
+    "dev": "tsx watch src/start.ts",
     "anchor": "tsx src/cron-anchor.ts",
     "verify": "tsx src/cli-verify.ts",
+    "test:e2e": "tsx test/e2e.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "asn1js": "^3.0.10",
+    "express": "^4.19.2",
     "javascript-opentimestamps": "^0.4.5",
     "pg": "^8.11.5",
     "pkijs": "^3.4.0"
@@ -20,6 +25,7 @@
     "viem": "^2.21.0"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/pg": "^8.11.0",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"

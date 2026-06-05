@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ici
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/ici
+      # --- KYC: OFF until you set these ---
+      # DIDIT_API_KEY:
+      # DIDIT_WEBHOOK_SECRET:
+      # DIDIT_WORKFLOW_ID:
+      # --- Blockchain: OFF until you set these (OTS is on unless OTS_DISABLED=1) ---
+      OTS_DISABLED: '1'
+      # TSA_URLS:
+      # EVM_PRIVATE_KEY:
+      # EVM_ANCHORS:
+      # --- Ready now: replication + non-blockchain corroboration ---
+      FS_SINKS: /data/audit
+      # GEOIP_URLS:
+      # TIME_CHECK_URLS:
+      # OPENSANCTIONS_URL:
+    volumes:
+      - auditdata:/data/audit
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '3000:3000'
+
+volumes:
+  pgdata: {}
+  auditdata: {}

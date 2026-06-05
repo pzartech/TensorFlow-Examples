@@ -113,16 +113,41 @@ device GPS. Each plugs in as one more `Claim` per dimension.
 | `src/cron-anchor.ts` | Scheduled replicate + anchor job |
 | `src/cli-verify.ts` | `npm run verify` — chain + proofs + replicas report |
 
-## Setup
+## Run it (everything is ready; KYC + blockchain are switches)
+
+Everything below runs today. **KYC (Didit)** and **blockchain anchors** are the
+only pieces left off — both are fully coded and turn on by adding env vars.
 
 ```bash
-cp .env.example .env        # fill DATABASE_URL, DIDIT_*, and any anchor providers
+cp .env.example .env        # set DATABASE_URL (KYC/blockchain can stay blank)
 npm install
-psql "$DATABASE_URL" -f sql/001_audit_schema.sql
+npm run migrate             # apply sql/*.sql
+npm start                   # HTTP server; prints a capability summary
 ```
 
-Enable providers by setting the relevant env vars (see `.env.example`). With none
-set you still get the Bitcoin/OpenTimestamps anchor by default.
+Or with Docker (Postgres + app): `docker compose up --build`.
+
+`GET /healthz` reports what's on, e.g. before KYC/blockchain are configured:
+
+```json
+{ "ok": true, "capabilities": {
+  "database": true, "kyc": false, "blockchain": false,
+  "anchorProviders": [], "sinks": ["fs:/data/audit"],
+  "corroboration": { "geoip": 0, "httpTime": 0, "openSanctions": false } } }
+```
+
+- `POST /verifications {"userId":"..."}` → starts a Didit session (503 with a
+  clear message until `DIDIT_API_KEY` is set).
+- `POST /webhooks/didit` → verifies the signature, corroborates id/place/time,
+  appends to the chain, then replication + anchoring carry it onward.
+
+**Switching the two remaining pieces on later:**
+- **KYC** → set `DIDIT_API_KEY`, `DIDIT_WEBHOOK_SECRET` (`DIDIT_WORKFLOW_ID`).
+- **Blockchain** → unset `OTS_DISABLED` (Bitcoin), and/or set `TSA_URLS` / `EVM_*`.
+
+Verified end-to-end against Postgres with KYC + blockchain off
+(`npm run test:e2e`): synthetic signed webhook → corroboration → chained append →
+filesystem replication → verify chain + replicas → tamper detected (7/7).
 
 ## Integrate into ICI
 

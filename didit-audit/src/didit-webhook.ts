@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { appendAuditEvent } from './audit-log.js';
+import { corroborate } from './corroborate.js';
 
 /**
  * Verify Didit's HMAC-SHA256 webhook signature in constant time.
@@ -36,6 +37,10 @@ export async function handleDiditWebhook(
 
   const event = JSON.parse(rawBody.toString('utf8'));
 
+  // Cross-corroborate WHO/WHERE/WHEN from several independent methods. Done
+  // before the DB write so the result is part of the hash-chained payload.
+  const corroboration = event && typeof event === 'object' ? await corroborate(event) : null;
+
   await db.query('begin');
   try {
     // The payload is attacker-influenced and may be malformed; read fields
@@ -48,6 +53,7 @@ export async function handleDiditWebhook(
         raw: rawBody.toString('base64'), // the exact bytes Didit signed
         signature: signatureHeader,
         decision: event,
+        corroboration, // consensus over id/place/time from several tools
       },
     });
     await db.query('commit');

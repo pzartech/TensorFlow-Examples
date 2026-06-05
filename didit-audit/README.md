@@ -60,11 +60,29 @@ Add more sinks for more layers — no code change.
 idempotent, best-effort). `verifyReplicas()` confirms each layer has every record
 with a matching `record_hash`, and is included in `npm run verify`.
 
+## Cross-corroboration (confirm id / place / time from several methods)
+
+Each verification's core facts are confirmed by **multiple independent methods**,
+and a consensus + disagreement flags are computed and embedded in the audit
+payload (so they're hash-chained, anchored, and replicated like everything else):
+
+| Fact | Methods (out of the box) | Consensus rule |
+|------|--------------------------|----------------|
+| **WHO** (identity) | Didit document, face match, liveness, AML | quorum of independent `pass` signals, no `fail` |
+| **WHERE** (place) | Didit IP geo, document issuing country, phone country, + any `GEOIP_URLS` tools | majority country; dissenters flagged |
+| **WHEN** (time) | Didit timestamp, server clock (+ TSA / Bitcoin / EVM anchor times later) | claims must agree within tolerance; median |
+
+`corroborate(event)` (in `src/corroborate.ts`) collects the claims and
+`evaluate()` derives the consensus. Add more tools (e.g. extra `GEOIP_URLS`) to
+raise the witness count with no code change. Map the `pick()` path lists to your
+exact Didit response shape.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `sql/001_audit_schema.sql` | Append-only `audit_log`; `audit_anchor` + `audit_anchor_proof` |
+| `src/corroborate.ts` | Multi-method consensus over id / place / time |
 | `src/audit-log.ts` | `appendAuditEvent()` — advisory-locked, hash-chained insert |
 | `src/canonical.ts` | Deterministic JSON (toJSON-aware, `undefined`-omitting) |
 | `src/merkle.ts` | Domain-separated Merkle root |

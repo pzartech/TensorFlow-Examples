@@ -71,6 +71,24 @@ function csv(value: string | undefined): string[] {
   return (value ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+function hostOf(template: string): string {
+  try {
+    return new URL(template.replace('{ip}', '0')).host;
+  } catch {
+    return 'host';
+  }
+}
+
+/** Person name for independent screening (sent only to AML tools you configure). */
+function personName(event: Record<string, unknown>): string | null {
+  const full = pick(event, ['id_verification.full_name', 'document.full_name', 'full_name']);
+  if (typeof full === 'string' && full.trim()) return full.trim();
+  const fn = pick(event, ['id_verification.first_name', 'document.first_name']);
+  const ln = pick(event, ['id_verification.last_name', 'document.last_name']);
+  const combo = [fn, ln].filter((x) => typeof x === 'string').join(' ').trim();
+  return combo || null;
+}
+
 /** Extract identity/location/time claims from a Didit decision. */
 export function diditClaims(event: Record<string, unknown>): Claim[] {
   const claims: Claim[] = [];
@@ -123,6 +141,59 @@ async function geoIpClaims(ip: unknown): Promise<Claim[]> {
     }
   }
   return out;
+}
+
+/**
+ * Independent WHEN witnesses (non-blockchain): the HTTPS `Date` header from
+ * several unrelated servers. One Claim per TIME_CHECK_URLS entry.
+ */
+async function httpDateClaims(): Promise<Claim[]> {
+  const out: Claim[] = [];
+  for (const url of csv(process.env.TIME_CHECK_URLS)) {
+    try {
+      const res = await fetch(url, { method: 'HEAD' });
+      const date = res.headers.get('date');
+      if (date) out.push({ dimension: 'time', source: `httpdate:${hostOf(url)}`, value: new Date(date).toISOString() });
+    } catch {
+      /* ignore an unreachable time source */
+    }
+  }
+  return out;
+}
+
+/**
+ * Independent identity/AML witness (non-Didit): screen the name against
+ * OpenSanctions (hosted API or self-hosted yente). A strong match => 'fail'
+ * (needs review); otherwise 'pass' (clear). Gated on OPENSANCTIONS_URL.
+ */
+async function openSanctionsClaims(name: string | null): Promise<Claim[]> {
+  const url = process.env.OPENSANCTIONS_URL;
+  if (!url || !name) return [];
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/match/default`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.OPENSANCTIONS_API_KEY ? { Authorization: `ApiKey ${process.env.OPENSANCTIONS_API_KEY}` } : {}),
+      },
+      body: JSON.stringify({ queries: { q: { schema: 'Person', properties: { name: [name] } } } }),
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { responses?: { q?: { results?: { score?: number }[] } }; results?: { score?: number }[] };
+    const results = body?.responses?.q?.results ?? body?.results ?? [];
+    const top = results[0]?.score ?? 0;
+    const threshold = Number(process.env.OPENSANCTIONS_THRESHOLD ?? 0.85);
+    return [
+      {
+        dimension: 'identity',
+        source: 'opensanctions',
+        value: top >= threshold ? 'fail' : 'pass',
+        detail: { topScore: top, matches: results.length },
+      },
+    ];
+  } catch {
+    return [];
+  }
 }
 
 function median(nums: number[]): number {
@@ -200,6 +271,12 @@ export async function corroborate(
 ): Promise<Corroboration> {
   const claims = diditClaims(event);
   const ip = pick(event, ['ip_analysis.ip', 'ip.address', 'device.ip']);
-  claims.push(...(await geoIpClaims(ip)));
+  // Independent witnesses — neither Didit nor blockchain. Run in parallel.
+  const [geo, httpDate, sanctions] = await Promise.all([
+    geoIpClaims(ip),
+    httpDateClaims(),
+    openSanctionsClaims(personName(event)),
+  ]);
+  claims.push(...geo, ...httpDate, ...sanctions);
   return evaluate(claims, opts);
 }

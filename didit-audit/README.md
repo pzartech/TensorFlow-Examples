@@ -77,6 +77,21 @@ payload (so they're hash-chained, anchored, and replicated like everything else)
 raise the witness count with no code change. Map the `pick()` path lists to your
 exact Didit response shape.
 
+### Witnesses beyond Didit and the blockchain
+
+To keep the confirmations independent, these sources rely on neither Didit nor a
+chain (all config-gated, best-effort, parallel):
+
+| Fact | Independent source | env |
+|------|--------------------|-----|
+| WHERE | extra geo-IP providers (MaxMind, ipinfo, ipapi, …) | `GEOIP_URLS` |
+| WHEN | HTTPS `Date` header from unrelated servers; **RFC 3161 TSA** is also non-blockchain time | `TIME_CHECK_URLS` |
+| WHO | **OpenSanctions** sanctions/PEP screen (hosted or self-hosted yente) | `OPENSANCTIONS_URL` |
+
+Further extensions (not bundled — need provider auth): a second IDV provider for
+high-risk, open-banking bank-name match, MNO/SIM identity, NTP/Roughtime time,
+device GPS. Each plugs in as one more `Claim` per dimension.
+
 ## Files
 
 | File | Purpose |

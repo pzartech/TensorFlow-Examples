@@ -1,6 +1,6 @@
 # didit-audit
 
-A tamper-evident, blockchain-anchored audit log for **Didit** identity verifications.
+A tamper-evident, **multi-anchored** audit log for **Didit** identity verifications.
 
 > ⚠️ **Staging note:** this module was scaffolded here because the ICI project
 > (`C:\Users\jerem\code\github\ici`) is local and not reachable from the cloud
@@ -15,42 +15,68 @@ A log we fully control can't prove that on its own, so we:
 
 1. **Hash-chain** every audit record (`record_hash = sha256(seq‖type‖payload_hash‖prev_hash‖created_at)`).
    Any retroactive edit, reorder, or deletion breaks the chain and is detected.
-2. **Anchor** Merkle roots of the chain to **Bitcoin** via OpenTimestamps. Because
-   we can't rewrite Bitcoin, we can't have backdated the records either.
-3. Publish **only hashes** on-chain. All personal data stays in our database and
-   stays erasable (GDPR-compatible).
+2. **Anchor** Merkle roots of the chain with **as many independent proofs as you
+   configure** — Bitcoin, qualified RFC 3161 timestamps, EVM chains, signatures.
+   The more independent witnesses, the harder any single point is to compromise
+   or explain away.
+3. Publish **only hashes**. All personal data stays in our database and stays
+   erasable (GDPR-compatible).
+
+## Anchor providers (stack as many as you like)
+
+Each provider is one independent proof over the same Merkle root. Enable them via
+env (`.env.example`); add more URLs/chains/keys to get more proofs per anchor with
+no code changes.
+
+| Provider | `method` | Proof | Strength |
+|----------|----------|-------|----------|
+| OpenTimestamps | `bitcoin-ots` | Bitcoin-backed timestamp | Trustless immutability; free |
+| RFC 3161 TSA (×N) | `rfc3161` | Signed TimeStampToken per TSA | **eIDAS legal presumption** when the TSA is a QTSP on the EU Trusted List |
+| EVM chain (×N) | `evm` | Root in tx calldata per chain | Independent public ledgers; smart-contract verifiable |
+| Managed-key signature | `signature` | Ed25519 signature | Non-repudiation; put the key in an HSM/KMS |
+
+`anchorPending()` runs **every** configured provider best-effort (one failing
+never loses the others) and stores each proof as a row in `audit_anchor_proof`.
+`verifyAuditLog()` checks **every** proof of **every** anchor.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `sql/001_audit_schema.sql` | Append-only `audit_log` + `audit_anchor` tables |
-| `src/audit-log.ts` | `appendAuditEvent()` — hash-chained insert |
+| `sql/001_audit_schema.sql` | Append-only `audit_log`; `audit_anchor` + `audit_anchor_proof` |
+| `src/audit-log.ts` | `appendAuditEvent()` — advisory-locked, hash-chained insert |
+| `src/canonical.ts` | Deterministic JSON (toJSON-aware, `undefined`-omitting) |
 | `src/merkle.ts` | Domain-separated Merkle root |
-| `src/anchor.ts` | `anchorPending()` + `upgradeAnchors()` (OpenTimestamps / Bitcoin) |
-| `src/verify.ts` | `verifyAuditLog()` — recompute chain + verify anchors |
+| `src/providers.ts` | Provider registry + OpenTimestamps; `getProviders()` from env |
+| `src/tsa-anchor.ts` | RFC 3161 request/verify (PKI.js) |
+| `src/evm-anchor.ts` | EVM anchor via `viem` (optional dep, lazy-loaded) |
+| `src/signature-anchor.ts` | Ed25519 / KMS-style signature anchor |
+| `src/anchor.ts` | `anchorPending()` + `upgradeProofs()` across all providers |
+| `src/verify.ts` | Recompute chain + verify all proofs |
 | `src/didit-webhook.ts` | HMAC-SHA256 signature check + append |
-| `src/cron-anchor.ts` | Daily anchoring job entrypoint |
+| `src/cron-anchor.ts` | Scheduled anchoring job |
 | `src/cli-verify.ts` | `npm run verify` — auditor-facing report |
 
 ## Setup
 
 ```bash
-cp .env.example .env        # fill DATABASE_URL, DIDIT_API_KEY, DIDIT_WEBHOOK_SECRET
+cp .env.example .env        # fill DATABASE_URL, DIDIT_*, and any anchor providers
 npm install
 psql "$DATABASE_URL" -f sql/001_audit_schema.sql
 ```
 
+Enable providers by setting the relevant env vars (see `.env.example`). With none
+set you still get the Bitcoin/OpenTimestamps anchor by default.
+
 ## Integrate into ICI
 
-1. In ICI's Didit webhook route, pass the **raw request body** (not a parsed object)
-   and the signature header into `handleDiditWebhook()`:
+1. In ICI's Didit webhook route, pass the **raw request body** (not a parsed
+   object) and the signature header into `handleDiditWebhook()`:
 
    ```ts
    import { pool } from './didit-audit/src/db.js';
    import { handleDiditWebhook } from './didit-audit/src/didit-webhook.js';
 
-   // express example — needs the raw body, e.g. express.raw({ type: '*/*' })
    app.post('/webhooks/didit', express.raw({ type: '*/*' }), async (req, res) => {
      const client = await pool.connect();
      try {
@@ -69,42 +95,40 @@ psql "$DATABASE_URL" -f sql/001_audit_schema.sql
    });
    ```
 
-2. Schedule `npm run anchor` (daily is plenty — one root covers thousands of events).
+2. Schedule `npm run anchor` (daily is plenty — one root covers thousands of
+   events; the job also confirms pending Bitcoin/EVM proofs).
 3. Run `npm run verify` any time to prove integrity; exit code `0` = intact.
 
 ## Strengthening evidentiary value (what reinforces the proof in court)
 
-Blockchain anchoring gives *trustless immutability*, but courts weigh **legal
-presumption** and **methodology** too. In rough priority order:
+Multiple anchors give *redundant* immutability, but courts also weigh **legal
+presumption** and **methodology**. In rough priority order:
 
-1. **eIDAS Qualified Electronic Timestamp (QTSP)** — anchor the same Merkle root
-   with a qualified timestamp authority *in addition to* Bitcoin. Under eIDAS, a
-   qualified timestamp carries a **legal presumption** of integrity and time in
-   EU courts and shifts the burden of proof to the challenger. Bitcoin is strong
-   technically but needs an expert to explain; a QTSP is recognised by law. Belt
-   **and** suspenders.
-2. **Sign records/roots with an HSM-backed key** (Azure Key Vault Managed HSM or
-   AWS KMS). Adds non-repudiation and documented key custody, so you can show
-   *who* could have produced the hashes.
+1. **eIDAS Qualified Electronic Timestamp (QTSP)** — list one or more qualified
+   TSAs in `TSA_URLS`. Under eIDAS a qualified timestamp carries a **legal
+   presumption** of integrity and time in EU courts and shifts the burden of
+   proof. For full *qualification*, validate the TSA signer cert against the EU
+   Trusted List (LOTL) — see the note in `tsa-anchor.ts` (`checkChain`).
+2. **HSM/KMS-held signing key** — set `SIGNING_*` and move the private key into
+   Azure Key Vault Managed HSM / AWS KMS. Adds non-repudiation + key custody.
 3. **WORM / immutable storage** for the raw log and proofs (S3 Object Lock, Azure
    immutable blob). Regulator-grade retention; prevents silent deletion.
-4. **Store Didit's raw signed webhook payload verbatim** (this module already does).
-   That embeds an independent third party's cryptographic attestation, not just
-   your own records.
+4. **Didit's raw signed webhook payload, stored verbatim** (this module already
+   does) — an independent third party's cryptographic attestation.
 5. **Independent verification + expert declaration** — `verify.ts` is reproducible
-   by anyone; pair it with documented procedure and, if needed, an auditor's
+   by anyone; pair with documented procedure and, if needed, an auditor's
    attestation.
-6. **Code provenance** — pin and code-sign the version that produced the hashes
-   (reproducible build) so you can show exactly which logic generated them.
+6. **Code provenance** — pin and code-sign the version that produced the hashes.
 7. **Redaction discipline** — if a `payload` is erased for GDPR, record a
-   `redaction` event rather than deleting the row, so the chain stays verifiable
-   and the erasure is itself audited.
-8. **Dual anchoring** — optionally anchor to a second independent chain (e.g.
-   Polygon) so no single network is a dependency.
+   `redaction` event rather than deleting the row, so the chain stays verifiable.
+8. **Dual/triple anchoring** — already supported: configure Bitcoin **and**
+   several TSAs **and** EVM chains so no single network is a dependency.
 
 ## Notes
 
-- Verify the exact OpenTimestamps API against your installed
-  `javascript-opentimestamps` version, and the Didit signature header name in the
-  Didit console, before going to production.
+- Validate the exact OpenTimestamps and PKI.js APIs against your installed
+  versions, and confirm the Didit signature header name in the Didit console,
+  before production.
 - Never put PII on-chain. Only `record_hash` / Merkle roots are anchored.
+- `viem` is an optional dependency; EVM anchoring is skipped if it isn't installed
+  or `EVM_*` isn't configured.

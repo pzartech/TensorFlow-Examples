@@ -1,7 +1,7 @@
 {
   "name": "didit-audit",
-  "version": "0.1.0",
-  "description": "Tamper-evident, blockchain-anchored audit log for Didit identity verifications",
+  "version": "0.2.0",
+  "description": "Tamper-evident, multi-anchored audit log for Didit identity verifications",
   "type": "module",
   "scripts": {
     "anchor": "tsx src/cron-anchor.ts",
@@ -9,8 +9,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "javascript-opentimestamps": "^0.4.9",
-    "pg": "^8.11.5"
+    "asn1js": "^3.0.10",
+    "javascript-opentimestamps": "^0.4.5",
+    "pg": "^8.11.5",
+    "pkijs": "^3.4.0"
+  },
+  "optionalDependencies": {
+    "viem": "^2.21.0"
   },
   "devDependencies": {
     "@types/pg": "^8.11.0",

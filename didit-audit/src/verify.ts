@@ -1,27 +1,44 @@
 import { createHash } from 'node:crypto';
-import OpenTimestamps from 'javascript-opentimestamps';
 import type { PoolClient } from 'pg';
 import { canonical } from './canonical.js';
 import { merkleRoot } from './merkle.js';
+import { getProviders } from './providers.js';
 
 const ZERO = Buffer.alloc(32);
 const sha256 = (b: Buffer): Buffer => createHash('sha256').update(b).digest();
 
+export interface ProofResult {
+  method: string;
+  provider: string;
+  ok: boolean;
+  assertedTime: string | null;
+  note?: string;
+}
+
+export interface AnchorResult {
+  id: number;
+  fromSeq: string;
+  toSeq: string;
+  proofs: ProofResult[];
+}
+
 export interface VerifyResult {
   records: number;
-  anchors: { id: number; fromSeq: string; toSeq: string; bitcoinTime: number | null }[];
+  anchors: AnchorResult[];
   ok: true;
 }
 
 /**
- * Recompute the entire hash chain and every Merkle anchor. Throws on the first
- * sign of tampering: a deleted record (sequence gap), a broken link, an altered
- * payload, or an anchor whose root no longer matches. A passing run, combined
- * with the Bitcoin timestamp, is the artifact you hand an auditor.
+ * Recompute the entire hash chain and verify every anchor's every proof. Throws
+ * on the first sign of tampering: a deleted record (sequence gap), a broken
+ * link, an altered payload, an anchor whose root no longer matches, or any proof
+ * that fails verification. A passing run, plus the proofs' asserted times, is the
+ * artifact you hand an auditor.
  */
 export async function verifyAuditLog(db: PoolClient): Promise<VerifyResult> {
   const rows = (await db.query('select * from audit_log order by seq')).rows;
 
+  // 1. Chain integrity.
   let prev = ZERO;
   let expectedSeq: bigint | null = null;
   for (const r of rows) {
@@ -54,11 +71,12 @@ export async function verifyAuditLog(db: PoolClient): Promise<VerifyResult> {
     expectedSeq = BigInt(r.seq) + 1n;
   }
 
+  // 2. Anchors + their proofs. Single pass over the ordered rows.
   const anchorRows = (await db.query('select * from audit_anchor order by from_seq')).rows;
-  const anchors: VerifyResult['anchors'] = [];
-  // Single pass: both rows and anchors are ordered by sequence, so we walk the
-  // rows with one pointer and slice each contiguous anchor range — O(N+M).
+  const byKey = new Map(getProviders().map((p) => [`${p.method}:${p.provider}`, p]));
+  const anchors: AnchorResult[] = [];
   let rowIndex = 0;
+
   for (const a of anchorRows) {
     const fromSeq = BigInt(a.from_seq);
     const toSeq = BigInt(a.to_seq);
@@ -76,18 +94,40 @@ export async function verifyAuditLog(db: PoolClient): Promise<VerifyResult> {
       throw new Error(`anchor ${a.id}: Merkle root mismatch`);
     }
 
-    let bitcoinTime: number | null = null;
-    try {
-      const detached = OpenTimestamps.DetachedTimestampFile.deserialize([...a.ots_proof]);
-      const original = OpenTimestamps.DetachedTimestampFile.fromHash(
-        new OpenTimestamps.Ops.OpSHA256(),
-        a.merkle_root,
-      );
-      bitcoinTime = await OpenTimestamps.verify(detached, original);
-    } catch {
-      // Proof not yet confirmed on-chain; chain integrity above still holds.
+    const proofRows = (
+      await db.query(
+        'select method, provider, proof from audit_anchor_proof where anchor_id=$1 order by id',
+        [a.id],
+      )
+    ).rows;
+
+    const proofs: ProofResult[] = [];
+    for (const pr of proofRows) {
+      const provider = byKey.get(`${pr.method}:${pr.provider}`);
+      if (!provider) {
+        // Can't verify a proof whose provider isn't configured in this run.
+        proofs.push({
+          method: pr.method,
+          provider: pr.provider,
+          ok: false,
+          assertedTime: null,
+          note: 'provider not configured in this environment',
+        });
+        continue;
+      }
+      const v = await provider.verify(a.merkle_root, pr.proof);
+      if (!v.ok) {
+        throw new Error(`anchor ${a.id}: proof ${pr.method}:${pr.provider} failed verification`);
+      }
+      proofs.push({
+        method: pr.method,
+        provider: pr.provider,
+        ok: true,
+        assertedTime: v.assertedTime?.toISOString() ?? null,
+      });
     }
-    anchors.push({ id: a.id, fromSeq: a.from_seq, toSeq: a.to_seq, bitcoinTime });
+
+    anchors.push({ id: a.id, fromSeq: a.from_seq, toSeq: a.to_seq, proofs });
   }
 
   return { records: rows.length, anchors, ok: true };

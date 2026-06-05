@@ -1,90 +1,103 @@
-import OpenTimestamps from 'javascript-opentimestamps';
 import type { PoolClient } from 'pg';
 import { merkleRoot } from './merkle.js';
+import { getProviders } from './providers.js';
 
 /**
- * Build a Merkle root over every not-yet-anchored record and timestamp it on
- * Bitcoin via OpenTimestamps. Only the root hash leaves your system — never PII.
- * Run on a schedule (e.g. daily); one anchor covers thousands of records.
+ * Build a Merkle root over every not-yet-anchored record and prove it with every
+ * configured provider (Bitcoin, each TSA, each EVM chain, signature keys). Each
+ * provider is best-effort: one failing never loses the others. Only the root
+ * hash leaves the system — never PII. Run on a schedule; one anchor covers
+ * thousands of records.
  */
 export async function anchorPending(db: PoolClient) {
   const last = await db.query('select coalesce(max(to_seq),0) as m from audit_anchor');
   const fromSeq = Number(last.rows[0].m) + 1;
 
   const rows = (
-    await db.query('select seq, record_hash from audit_log where seq >= $1 order by seq', [
-      fromSeq,
-    ])
+    await db.query('select seq, record_hash from audit_log where seq >= $1 order by seq', [fromSeq])
   ).rows;
   if (rows.length === 0) return null;
 
   const root = merkleRoot(rows.map((r) => r.record_hash as Buffer));
+  const providers = getProviders();
 
-  const detached = OpenTimestamps.DetachedTimestampFile.fromHash(
-    new OpenTimestamps.Ops.OpSHA256(),
-    root,
-  );
-  await OpenTimestamps.stamp(detached);
-  const proof = Buffer.from(detached.serializeToBytes());
+  await db.query('begin');
+  try {
+    const ins = await db.query(
+      'insert into audit_anchor (from_seq, to_seq, merkle_root) values ($1,$2,$3) returning id',
+      [rows[0].seq, rows[rows.length - 1].seq, root],
+    );
+    const anchorId: string = ins.rows[0].id;
 
-  await db.query(
-    `insert into audit_anchor (from_seq, to_seq, merkle_root, ots_proof)
-     values ($1,$2,$3,$4)`,
-    [rows[0].seq, rows[rows.length - 1].seq, root, proof],
-  );
+    const proofs: { method: string; provider: string; status: string }[] = [];
+    for (const p of providers) {
+      try {
+        const out = await p.anchor(root);
+        await db.query(
+          `insert into audit_anchor_proof
+             (anchor_id, method, provider, proof, asserted_time, status, detail)
+           values ($1,$2,$3,$4,$5,$6,$7)`,
+          [anchorId, p.method, p.provider, out.proof, out.assertedTime ?? null, out.status, out.detail ?? null],
+        );
+        proofs.push({ method: p.method, provider: p.provider, status: out.status });
+      } catch (e) {
+        console.error(`anchor provider ${p.method}:${p.provider} failed:`, (e as Error).message);
+        proofs.push({ method: p.method, provider: p.provider, status: 'failed' });
+      }
+    }
 
-  return {
-    fromSeq: rows[0].seq,
-    toSeq: rows[rows.length - 1].seq,
-    merkleRoot: root.toString('hex'),
-    records: rows.length,
-  };
+    if (!proofs.some((r) => r.status !== 'failed')) {
+      // Nothing succeeded — roll back so the anchor row doesn't exist and we retry.
+      await db.query('rollback');
+      throw new Error('all anchor providers failed; no proof recorded');
+    }
+
+    await db.query('commit');
+    return {
+      anchorId,
+      fromSeq: rows[0].seq,
+      toSeq: rows[rows.length - 1].seq,
+      merkleRoot: root.toString('hex'),
+      records: rows.length,
+      proofs,
+    };
+  } catch (e) {
+    await db.query('rollback').catch(() => {});
+    throw e;
+  }
 }
 
 /**
- * OpenTimestamps proofs are "incomplete" until the Bitcoin tx confirms (a few
- * hours). Re-run this periodically to upgrade pending proofs to full
- * Bitcoin-backed attestations.
+ * Advance pending proofs to confirmed where possible (OpenTimestamps Bitcoin
+ * upgrade, EVM transaction confirmation). Marks them confirmed so they're not
+ * re-processed every run.
  */
-export async function upgradeAnchors(db: PoolClient) {
+export async function upgradeProofs(db: PoolClient) {
+  const byKey = new Map(getProviders().map((p) => [`${p.method}:${p.provider}`, p]));
   const rows = (
     await db.query(
-      'select id, merkle_root, ots_proof from audit_anchor where bitcoin_block is null',
+      `select p.id, p.method, p.provider, p.proof, a.merkle_root
+         from audit_anchor_proof p
+         join audit_anchor a on a.id = p.anchor_id
+        where p.status = 'pending'`,
     )
   ).rows;
-  let upgraded = 0;
-  for (const a of rows) {
-    const detached = OpenTimestamps.DetachedTimestampFile.deserialize([...a.ots_proof]);
-    const changed = await OpenTimestamps.upgrade(detached);
 
-    // Once the proof verifies against Bitcoin, capture the block height (or fall
-    // back to a sentinel) so this anchor is no longer re-processed on every run.
-    let bitcoinBlock: number | null = null;
+  let confirmed = 0;
+  for (const r of rows) {
+    const provider = byKey.get(`${r.method}:${r.provider}`);
+    if (!provider?.upgrade) continue;
     try {
-      const original = OpenTimestamps.DetachedTimestampFile.fromHash(
-        new OpenTimestamps.Ops.OpSHA256(),
-        a.merkle_root,
+      const out = await provider.upgrade(r.proof, r.merkle_root);
+      if (!out) continue;
+      await db.query(
+        'update audit_anchor_proof set proof=$1, status=$2, asserted_time=coalesce($3, asserted_time) where id=$4',
+        [out.proof, out.status, out.assertedTime ?? null, r.id],
       );
-      const result = await OpenTimestamps.verify(detached, original);
-      if (result != null) {
-        // Newer lib versions expose { bitcoin: { height, timestamp } }; older
-        // ones return the Unix timestamp directly. Either confirms the anchor.
-        bitcoinBlock =
-          (result as { bitcoin?: { height?: number } })?.bitcoin?.height ??
-          (typeof result === 'number' ? result : 1);
-      }
-    } catch {
-      // Not yet confirmed on-chain.
-    }
-
-    if (changed || bitcoinBlock !== null) {
-      await db.query('update audit_anchor set ots_proof=$1, bitcoin_block=$2 where id=$3', [
-        Buffer.from(detached.serializeToBytes()),
-        bitcoinBlock,
-        a.id,
-      ]);
-      if (bitcoinBlock !== null) upgraded++;
+      if (out.status === 'confirmed') confirmed++;
+    } catch (e) {
+      console.error(`upgrade ${r.method}:${r.provider} failed:`, (e as Error).message);
     }
   }
-  return upgraded;
+  return confirmed;
 }

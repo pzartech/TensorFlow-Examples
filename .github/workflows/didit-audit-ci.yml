@@ -1,0 +1,46 @@
+name: didit-audit CI
+
+on:
+  push:
+    paths:
+      - 'didit-audit/**'
+      - '.github/workflows/didit-audit-ci.yml'
+  pull_request:
+    paths:
+      - 'didit-audit/**'
+      - '.github/workflows/didit-audit-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: didit-audit
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ici_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ici_test
+      DIDIT_WEBHOOK_SECRET: test-secret
+      # KYC and blockchain stay OFF in CI — we test everything else.
+      OTS_DISABLED: '1'
+      FS_SINKS: /tmp/audit-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: mkdir -p /tmp/audit-ci && npm run migrate
+      - run: npm run test:e2e

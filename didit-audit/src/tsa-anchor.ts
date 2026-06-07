@@ -14,18 +14,13 @@
  * true eIDAS *qualification* validate the signer certificate against the relevant
  * EU Trusted List (LOTL) or pin your QTSP's root CA (see verifyTimestampToken).
  */
-import { randomBytes, webcrypto } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import * as asn1js from 'asn1js';
 import * as pkijs from 'pkijs';
+import './pki-engine.js';
+import { loadTrustedRoots, validateCertChain } from './eidas.js';
 
 const SHA256_OID = '2.16.840.1.101.3.4.2.1';
-
-// Wire PKI.js to Node's WebCrypto implementation.
-const nodeCrypto = webcrypto as unknown as Crypto;
-pkijs.setEngine(
-  'nodeEngine',
-  new pkijs.CryptoEngine({ name: 'nodeEngine', crypto: nodeCrypto, subtle: nodeCrypto.subtle }),
-);
 
 /** Copy a Node Buffer/Uint8Array into a standalone ArrayBuffer. */
 function toAb(view: Uint8Array): ArrayBuffer {
@@ -80,6 +75,7 @@ export interface TimestampVerification {
   genTime: Date;
   signerSubject: string;
   signatureValid: boolean;
+  qualified: boolean; // signer chains to a configured EU-trusted (QTSP) root
 }
 
 /**
@@ -124,5 +120,15 @@ export async function verifyTimestampToken(
       ? cert.subject.typesAndValues.map((t) => `${t.type}=${String(t.value.valueBlock.value)}`).join(', ')
       : 'unknown';
 
-  return { genTime: tstInfo.genTime, signerSubject, signatureValid };
+  // eIDAS qualification: signer must chain to a configured trusted root.
+  const roots = loadTrustedRoots();
+  let qualified = false;
+  if (roots.length) {
+    const certs = (signedData.certificates ?? []).filter(
+      (c): c is pkijs.Certificate => c instanceof pkijs.Certificate,
+    );
+    qualified = await validateCertChain(certs, roots);
+  }
+
+  return { genTime: tstInfo.genTime, signerSubject, signatureValid, qualified };
 }

@@ -51,3 +51,16 @@ jobs:
           FS_SINKS: /tmp/audit-erasure
           # Test-only key (base64 of 32 bytes); real key lives in HSM/KMS.
           REPLICA_MASTER_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      - name: eIDAS chain validation
+        run: |
+          T=$(mktemp -d)
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout "$T/ca.key" -out "$T/ca.pem" -days 3650 -subj "/CN=Test QTSP Root" \
+            -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+          openssl ecparam -name prime256v1 -genkey -noout -out "$T/leaf.key"
+          openssl req -new -key "$T/leaf.key" -out "$T/leaf.csr" -subj "/CN=Test TSA"
+          openssl x509 -req -in "$T/leaf.csr" -CA "$T/ca.pem" -CAkey "$T/ca.key" -CAcreateserial -out "$T/leaf.pem" -days 3650
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout "$T/other.key" -out "$T/other.pem" -days 3650 -subj "/CN=Other Root" \
+            -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+          CA_PEM="$T/ca.pem" LEAF_PEM="$T/leaf.pem" OTHER_PEM="$T/other.pem" npm run test:eidas

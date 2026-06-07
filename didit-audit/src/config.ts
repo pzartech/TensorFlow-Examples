@@ -1,3 +1,4 @@
+import { eidasEnabled } from './eidas.js';
 import { getProviders } from './providers.js';
 import { getSinks } from './sinks.js';
 
@@ -15,6 +16,7 @@ export interface Capabilities {
   anchorProviders: string[];
   sinks: string[];
   replicaEncryption: boolean; // per-subject encryption + crypto-shred enabled
+  eidasTrustedRoots: boolean; // TSA qualification enforced against trusted roots
   corroboration: { geoip: number; httpTime: number; openSanctions: boolean };
 }
 
@@ -31,6 +33,7 @@ export function capabilities(): Capabilities {
     anchorProviders,
     sinks: getSinks().map((s) => s.name),
     replicaEncryption: !!process.env.REPLICA_MASTER_KEY,
+    eidasTrustedRoots: eidasEnabled(),
     corroboration: {
       geoip: count(process.env.GEOIP_URLS),
       httpTime: count(process.env.TIME_CHECK_URLS),
@@ -53,7 +56,7 @@ export function printStartupSummary(): void {
   console.log(`  database:        ${yn(c.database)}`);
   console.log(`  KYC (Didit):     ${yn(c.kyc)}${c.kyc ? '' : '  ← set DIDIT_API_KEY + DIDIT_WEBHOOK_SECRET to enable'}`);
   console.log(`  blockchain:      ${yn(c.blockchain)}${c.blockchain ? '' : '  ← set TSA_URLS / EVM_* / keep OTS to enable'}`);
-  console.log(`  anchor proofs:   [${c.anchorProviders.join(', ') || 'none'}]`);
+  console.log(`  anchor proofs:   [${c.anchorProviders.join(', ') || 'none'}]${c.eidasTrustedRoots ? '  (eIDAS qualification enforced)' : ''}`);
   console.log(`  replication:     [${c.sinks.join(', ') || 'none'}]${c.replicaEncryption ? ' (encrypted, crypto-shred)' : ''}`);
   console.log(`  corroboration:   geoip=${c.corroboration.geoip} httpTime=${c.corroboration.httpTime} openSanctions=${c.corroboration.openSanctions}`);
 }

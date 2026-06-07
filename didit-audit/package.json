@@ -12,6 +12,7 @@
     "shred": "tsx src/shred.ts",
     "test:e2e": "tsx test/e2e.ts",
     "test:erasure": "tsx test/erasure.ts",
+    "test:eidas": "tsx test/eidas.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

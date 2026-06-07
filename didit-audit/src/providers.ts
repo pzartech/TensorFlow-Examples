@@ -14,6 +14,7 @@
  *   SIGNING_KEY_PEM / SIGNING_PUBKEY_PEM   Ed25519 PEM (private optional for verify-only)
  */
 import OpenTimestamps from 'javascript-opentimestamps';
+import { eidasEnabled } from './eidas.js';
 import { evmProvider } from './evm-anchor.js';
 import { signatureProvider } from './signature-anchor.js';
 import { requestTimestamp, verifyTimestampToken } from './tsa-anchor.js';
@@ -104,7 +105,9 @@ function tsaProvider(url: string): AnchorProvider {
     },
     async verify(root, proof) {
       const v = await verifyTimestampToken(root, proof);
-      return { ok: v.signatureValid, assertedTime: v.genTime, detail: { signer: v.signerSubject } };
+      // When trusted roots are configured, require the signer to be qualified.
+      const ok = v.signatureValid && (!eidasEnabled() || v.qualified);
+      return { ok, assertedTime: v.genTime, detail: { signer: v.signerSubject, qualified: v.qualified } };
     },
   };
 }

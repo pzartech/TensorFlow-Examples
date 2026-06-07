@@ -203,8 +203,11 @@ presumption** and **methodology**. In rough priority order:
 1. **eIDAS Qualified Electronic Timestamp (QTSP)** — list one or more qualified
    TSAs in `TSA_URLS`. Under eIDAS a qualified timestamp carries a **legal
    presumption** of integrity and time in EU courts and shifts the burden of
-   proof. For full *qualification*, validate the TSA signer cert against the EU
-   Trusted List (LOTL) — see the note in `tsa-anchor.ts` (`checkChain`).
+   proof. Qualification is **enforced**: set `TSA_TRUSTED_ROOTS_PEM` /
+   `TSA_TRUSTED_ROOTS_FILE` to your QTSP root(s) (or QTSP CA certs extracted from
+   the EU Trusted List) and a TSA proof only verifies if its signer chains to a
+   trusted root (`src/eidas.ts`). Without roots configured, the timestamp's
+   signature is still verified but qualification isn't asserted.
 2. **HSM/KMS-held signing key** — set `SIGNING_*` and move the private key into
    Azure Key Vault Managed HSM / AWS KMS. Adds non-repudiation + key custody.
 3. **WORM / immutable storage** for the raw log and proofs (S3 Object Lock, Azure

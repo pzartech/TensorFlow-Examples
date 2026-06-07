@@ -95,10 +95,10 @@ export async function verifyTimestampToken(
   let signatureValid = false;
   try {
     const result: unknown = await signedData.verify({ signer: 0, checkChain: false });
+    // Fail closed: only an explicit true (boolean or extendedMode.signatureVerified)
+    // counts as valid, so an unexpected return shape can never default-accept.
     signatureValid =
-      typeof result === 'boolean'
-        ? result
-        : ((result as { signatureVerified?: boolean })?.signatureVerified ?? true);
+      result === true || (result as { signatureVerified?: boolean })?.signatureVerified === true;
   } catch {
     signatureValid = false;
   }

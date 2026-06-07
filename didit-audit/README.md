@@ -60,6 +60,19 @@ Add more sinks for more layers — no code change.
 idempotent, best-effort). `verifyReplicas()` confirms each layer has every record
 with a matching `record_hash`, and is included in `npm run verify`.
 
+### Encryption + GDPR erasure (crypto-shred)
+
+Replicas hold full payloads (possible PII). Set `REPLICA_MASTER_KEY` (base64 of
+32 bytes; `openssl rand -base64 32`) to envelope-encrypt every replica with a
+**per-subject** data key. The `record_hash` stays cleartext in the envelope, so
+integrity is still checkable without decrypting.
+
+To erase a person: `npm run shred -- <subject_ref>`. This deletes their data key
+(every encrypted replica becomes **unrecoverable**) and nulls their DB payload —
+but keeps `payload_hash`/`record_hash`, so **the hash chain and every anchor
+still verify**. Erasure does not break tamper-evidence; verify reports the
+records as `redacted`. Keep the master key in an HSM/KMS in production.
+
 ## Cross-corroboration (confirm id / place / time from several methods)
 
 Each verification's core facts are confirmed by **multiple independent methods**,
@@ -107,7 +120,9 @@ device GPS. Each plugs in as one more `Claim` per dimension.
 | `src/signature-anchor.ts` | Ed25519 / KMS-style signature anchor |
 | `src/anchor.ts` | `anchorPending()` + `upgradeProofs()` across all providers |
 | `src/sinks.ts` | Replication sinks (filesystem, S3, Azure) + `getSinks()` |
+| `src/cipher.ts` | Per-subject replica encryption + crypto-shred (`shredSubject`) |
 | `src/replicate.ts` | `replicatePending()` + `verifyReplicas()` |
+| `src/shred.ts` | `npm run shred -- <subject>` — GDPR erasure CLI |
 | `src/verify.ts` | Recompute chain + verify all proofs |
 | `src/didit-webhook.ts` | HMAC-SHA256 signature check + append |
 | `src/cron-anchor.ts` | Scheduled replicate + anchor job |

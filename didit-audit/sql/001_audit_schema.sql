@@ -12,7 +12,7 @@ create table if not exists audit_log (
   subject_ref      text,                            -- pseudonymous ICI user id — NOT PII
   didit_session_id text,
   payload_hash     bytea       not null,            -- sha256 of canonical(payload)
-  payload          jsonb       not null,            -- full event (internal only; may contain PII; never anchored)
+  payload          jsonb,                            -- full event (internal; may contain PII; NULL once GDPR-erased)
   prev_hash        bytea       not null,            -- record_hash of seq-1 (32 zero bytes for genesis)
   record_hash      bytea       not null,            -- sha256(seq‖event_type‖payload_hash‖prev_hash‖created_at)
   created_at       timestamptz not null
@@ -44,6 +44,16 @@ create table if not exists audit_anchor_proof (
   detail        jsonb,
   created_at    timestamptz not null default now(),
   unique (anchor_id, method, provider)
+);
+
+-- Per-subject wrapped data key for replica encryption. Deleting a row
+-- crypto-shreds that subject: their encrypted replicas become unrecoverable.
+create table if not exists audit_subject_key (
+  subject_ref text        primary key,
+  dek_wrapped bytea       not null,   -- subject DEK, encrypted with the master key
+  iv          bytea       not null,
+  tag         bytea       not null,
+  created_at  timestamptz not null default now()
 );
 
 -- Per-sink high-water mark for replicating full records to independent layers

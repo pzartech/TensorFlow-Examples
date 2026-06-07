@@ -9,7 +9,9 @@
     "dev": "tsx watch src/start.ts",
     "anchor": "tsx src/cron-anchor.ts",
     "verify": "tsx src/cli-verify.ts",
+    "shred": "tsx src/shred.ts",
     "test:e2e": "tsx test/e2e.ts",
+    "test:erasure": "tsx test/erasure.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

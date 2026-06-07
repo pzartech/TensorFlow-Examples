@@ -49,16 +49,20 @@ export async function verifyAuditLog(db: PoolClient): Promise<VerifyResult> {
       throw new Error(`broken chain at seq ${r.seq}`);
     }
 
-    const payloadHash = sha256(Buffer.from(canonical(r.payload)));
-    if (!payloadHash.equals(r.payload_hash)) {
-      throw new Error(`payload altered at seq ${r.seq}`);
+    // payload is NULL after GDPR erasure; the stored payload_hash is retained so
+    // the chain still verifies. Only recompute when the payload is present.
+    if (r.payload !== null) {
+      const payloadHash = sha256(Buffer.from(canonical(r.payload)));
+      if (!payloadHash.equals(r.payload_hash)) {
+        throw new Error(`payload altered at seq ${r.seq}`);
+      }
     }
 
     const recordHash = sha256(
       Buffer.concat([
         Buffer.from(String(r.seq)),
         Buffer.from(r.event_type),
-        payloadHash,
+        r.payload_hash,
         r.prev_hash,
         Buffer.from(new Date(r.created_at).toISOString()),
       ]),

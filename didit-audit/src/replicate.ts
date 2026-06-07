@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
-import { getSinks, recordKey, serializeRecord } from './sinks.js';
+import { sealRecord, openRecord } from './cipher.js';
+import { getSinks, recordKey } from './sinks.js';
 
 export interface ReplicationStatus {
   sink: string;
@@ -31,7 +32,7 @@ export async function replicatePending(db: PoolClient): Promise<ReplicationStatu
     let error: string | undefined;
     try {
       for (const row of rows) {
-        await sink.put(recordKey(row.seq), serializeRecord(row));
+        await sink.put(recordKey(row.seq), await sealRecord(db, row));
         last = String(row.seq);
         replicated++;
       }
@@ -56,12 +57,14 @@ export async function replicatePending(db: PoolClient): Promise<ReplicationStatu
 export interface ReplicaCheck {
   sink: string;
   checked: number;
+  redacted: number; // records whose subject was crypto-shredded (content unrecoverable)
 }
 
 /**
  * Cross-check every sink against the authoritative log: each record must be
- * present and its stored record_hash must match. Throws on the first divergence
- * — that's a layer that has been tampered with or has fallen out of sync.
+ * present and its (cleartext) record_hash must match. Encrypted replicas are
+ * opened to confirm content too; crypto-shredded ones are counted as redacted
+ * (still a valid, present record — just unrecoverable). Throws on divergence.
  */
 export async function verifyReplicas(db: PoolClient): Promise<ReplicaCheck[]> {
   const sinks = getSinks();
@@ -70,16 +73,18 @@ export async function verifyReplicas(db: PoolClient): Promise<ReplicaCheck[]> {
 
   for (const sink of sinks) {
     let checked = 0;
+    let redacted = 0;
     for (const row of rows) {
       const data = await sink.get(recordKey(row.seq));
       if (!data) throw new Error(`sink ${sink.name}: missing record seq ${row.seq}`);
-      const parsed = JSON.parse(data.toString('utf8')) as { record_hash?: string };
-      if (parsed.record_hash !== (row.record_hash as Buffer).toString('hex')) {
+      const opened = await openRecord(db, data);
+      if (opened.recordHash !== (row.record_hash as Buffer).toString('hex')) {
         throw new Error(`sink ${sink.name}: record_hash mismatch at seq ${row.seq}`);
       }
+      if (opened.shredded) redacted++;
       checked++;
     }
-    results.push({ sink: sink.name, checked });
+    results.push({ sink: sink.name, checked, redacted });
   }
 
   return results;

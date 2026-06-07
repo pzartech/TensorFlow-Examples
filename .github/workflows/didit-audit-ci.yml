@@ -42,5 +42,12 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
-      - run: mkdir -p /tmp/audit-ci && npm run migrate
+      - run: npm run migrate
       - run: npm run test:e2e
+        env:
+          FS_SINKS: /tmp/audit-e2e
+      - run: npm run test:erasure
+        env:
+          FS_SINKS: /tmp/audit-erasure
+          # Test-only key (base64 of 32 bytes); real key lives in HSM/KMS.
+          REPLICA_MASTER_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=

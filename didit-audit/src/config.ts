@@ -14,6 +14,7 @@ export interface Capabilities {
   blockchain: boolean; // any chain anchor (Bitcoin/EVM) enabled
   anchorProviders: string[];
   sinks: string[];
+  replicaEncryption: boolean; // per-subject encryption + crypto-shred enabled
   corroboration: { geoip: number; httpTime: number; openSanctions: boolean };
 }
 
@@ -29,6 +30,7 @@ export function capabilities(): Capabilities {
     blockchain: anchorProviders.some((p) => p.startsWith('bitcoin-ots') || p.startsWith('evm')),
     anchorProviders,
     sinks: getSinks().map((s) => s.name),
+    replicaEncryption: !!process.env.REPLICA_MASTER_KEY,
     corroboration: {
       geoip: count(process.env.GEOIP_URLS),
       httpTime: count(process.env.TIME_CHECK_URLS),
@@ -52,6 +54,6 @@ export function printStartupSummary(): void {
   console.log(`  KYC (Didit):     ${yn(c.kyc)}${c.kyc ? '' : '  ← set DIDIT_API_KEY + DIDIT_WEBHOOK_SECRET to enable'}`);
   console.log(`  blockchain:      ${yn(c.blockchain)}${c.blockchain ? '' : '  ← set TSA_URLS / EVM_* / keep OTS to enable'}`);
   console.log(`  anchor proofs:   [${c.anchorProviders.join(', ') || 'none'}]`);
-  console.log(`  replication:     [${c.sinks.join(', ') || 'none'}]`);
+  console.log(`  replication:     [${c.sinks.join(', ') || 'none'}]${c.replicaEncryption ? ' (encrypted, crypto-shred)' : ''}`);
   console.log(`  corroboration:   geoip=${c.corroboration.geoip} httpTime=${c.corroboration.httpTime} openSanctions=${c.corroboration.openSanctions}`);
 }
